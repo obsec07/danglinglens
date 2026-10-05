@@ -1,0 +1,6 @@
+# Relative labels; @ includes the base domain (already checked automatically).
+@
+www
+docs
+staging
+api.dev

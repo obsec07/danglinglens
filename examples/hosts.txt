@@ -1,0 +1,3 @@
+# Documentation-only reserved hostnames; replace with your authorized targets.
+docs.example.test
+staging.example.test

@@ -1,0 +1,18 @@
+# Contributing
+
+Install `python -m pip install -e '.[dev]'`, then run `ruff check .`,
+`ruff format --check .`, and `pytest -q`. Tests must use fixtures or local
+servers; do not scan live third-party assets from CI.
+
+For a provider rule, include current primary documentation, a capture from an
+owned test resource, and its naming and ownership limitations. Remove secrets
+and third-party identifiers from fixtures. Include a positive fixture and
+meaningful negative controls: generic errors, protected resources, valid sites,
+wrong provider, wrong hostname, DNS failure and wildcard ambiguity as relevant.
+
+Never introduce a `vulnerable` label solely from a fingerprint. Do not promote
+DNS errors to NXDOMAIN, add generic 404 matches, or bypass domain-verification
+checks. A rule is evidence for a review candidate, not a promise of claimability.
+
+Update the reviewed date, research notes, coverage table and CLI documentation
+when behavior changes. Describe compatibility and false-negative tradeoffs.
