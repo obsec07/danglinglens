@@ -7,6 +7,7 @@ import time
 
 import aiohttp
 
+from . import __version__
 from .dnscheck import RateLimiter
 from .models import HTTPView
 
@@ -69,7 +70,7 @@ class HTTPClient:
         response = HTTPView(url=f"{scheme}://{authority}{path}")
         response.request_headers = {
             "Host": authority,
-            "User-Agent": "DanglingLens/0.1 (+authorized-security-research)",
+            "User-Agent": f"DanglingLens/{__version__} (+authorized-security-research)",
             "Accept": "*/*",
             "Accept-Encoding": "identity",
             "Cache-Control": "no-cache",

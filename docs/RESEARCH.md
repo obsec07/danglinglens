@@ -58,9 +58,13 @@ fingerprint database is silently downloaded or updated at runtime.
    lowers the result to an ownership signal; absence does not prove availability.
 7. Repeat the DNS checks and any matching HTTP fingerprint after a delay.
    Require the HTTP signal on the same protocol. Conflicting successful
-   responses, changing DNS, or failed controls prevent a normal candidate.
-8. Save observations and classify conservatively. Do not upgrade a candidate
-   based on guessed severity, a provider banner, TLS failure or resource age.
+   responses, changing DNS, failed controls, errors on the other protocol,
+   access restrictions and unchecked redirects produce `inconclusive`.
+8. Save observations as `dangling_dns` or `provider_error` with unassessed
+   informational severity. These labels describe responses, not resource
+   availability or impact. Provider caveats are stored as limitations, separate
+   from observations. Only an explicit operator assessment after successful
+   authenticated marker verification can add a higher severity label.
 
 This sequence is an engineering choice derived from the sources, not a claim
 that they prescribe this exact algorithm. Two rounds may hit the same recursive

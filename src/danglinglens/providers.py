@@ -36,7 +36,7 @@ class Provider:
             return False
         if self.header:
             key, value = self.header
-            if value not in response.headers.get(key, "").lower():
+            if value != response.headers.get(key, "").strip().lower():
                 return False
         if self.key == "aws_s3":
             # Reject copied strings, wrong bucket names, AccessDenied, and missing objects.

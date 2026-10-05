@@ -48,6 +48,7 @@ class Result:
     status: str = "no_signal"
     provider: str | None = None
     reasons: list[str] = field(default_factory=list)
+    limitations: list[str] = field(default_factory=list)
     dns: list[DNSView] = field(default_factory=list)
     http: list[HTTPView] = field(default_factory=list)
     wildcard: dict[str, Any] = field(default_factory=dict)
@@ -55,7 +56,9 @@ class Result:
     references: list[str] = field(default_factory=list)
     timestamp: str = field(default_factory=utcnow)
     claimability: str = "not_verified"
-    schema_version: int = 1
+    severity: str = "info"
+    severity_source: str = "unassessed"
+    schema_version: int = 2
 
     def as_dict(self, include_body: bool = False) -> dict:
         result = asdict(self)

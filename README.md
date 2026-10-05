@@ -3,7 +3,7 @@
 Evidence-first subdomain takeover triage for authorized bug bounty work.
 
 **No automated scanner can promise zero false positives.** DanglingLens reports
-review candidates, not confirmed vulnerabilities. It never claims a resource,
+observed DNS and HTTP conditions, not confirmed vulnerabilities. It never claims a resource,
 creates a cloud account, buys a domain, or changes DNS. A separate marker check
 can record content control after your authorized manual validation.
 
@@ -12,10 +12,26 @@ can record content control after your authorized manual validation.
 Requires Python 3.11 or newer. Tested locally on Python 3.14; CI covers 3.11–3.14.
 
 ```bash
+git clone https://github.com/obsec07/danglinglens.git
+cd danglinglens
+
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install .
 danglinglens --help
+```
+
+If you already cloned the repository, enter that existing `danglinglens` directory
+instead of cloning again. Run `python -m pip install .` from the directory containing
+`pyproject.toml`; running it from your home directory or the `docs` directory fails.
+
+To update an existing installation, run these commands from the repository root:
+
+```bash
+git pull --ff-only
+source .venv/bin/activate
+python -m pip install --upgrade .
+danglinglens --version
 ```
 
 On Windows, activate with `.venv\Scripts\activate`. Alternatively, install this
@@ -89,7 +105,7 @@ HTTP connects to the addresses captured by the DNS checks while retaining the
 original Host header and TLS SNI. Redirects are recorded without following them.
 No cookies are reused. Environment proxies and `.netrc` authentication are not
 used. Non-public addresses are blocked unless `--allow-private` is supplied for
-an authorized lab. Candidate checks also make DNS-only requests for two random
+an authorized lab. Observation checks also make DNS-only requests for two random
 sibling names to detect wildcard similarity. They use child names instead when
 siblings would fall outside `--scope`. CNAME targets are resolved as necessary
 to trace the supplied hostname's routing; they are never requested directly over HTTP.
@@ -100,9 +116,25 @@ Human-readable progress goes to stderr. `--jsonl FILE` writes every result as
 JSON Lines; use `--jsonl -` for machine-readable stdout. Existing output files
 and evidence directories are never overwritten. Use a fresh name per run.
 
+Help is always plain text, including on Python 3.14 and with forced-color
+environment variables. Results are one line each by default. Add `-v` or
+`--verbose` for observed reasons and separately labeled limitations.
+
+```bash
+danglinglens --help
+danglinglens scan hosts.txt --raw
+danglinglens scan hosts.txt --verbose --jsonl results.jsonl
+```
+
+`--raw` disables result colors, the startup banner, progress and the completion
+summary. `--color auto|always|never` controls severity label colors; `auto`
+colors only a terminal. `NO_COLOR` and `--raw` override forced result colors.
+JSONL and saved evidence never contain color escape sequences from the renderer.
+
 | Status | Meaning |
 | --- | --- |
-| `candidate` | Repeated dangling CNAME or provider-specific error; exact claimability is unverified. |
+| `dangling_dns` | A CNAME target returned NXDOMAIN across the configured resolvers in two rounds. No claimability or impact has been established. |
+| `provider_error` | A supported provider error reproduced on the same protocol with the expected DNS routing. No claimability or impact has been established. |
 | `wildcard_review` | Random DNS controls match the suspect routing; review wildcard behavior separately. |
 | `ownership_signal` | An Azure `asuid` TXT record was found; ownership protection may block a claim. |
 | `provider_review` | A missing target belongs to a provider whose historical signature is suppressed. |
@@ -117,8 +149,39 @@ remain in JSONL and summary counts. Scan results never contain a `vulnerable`
 classification. All results retain `claimability: "not_verified"` because the
 tool cannot establish provider-account ownership or prior claimability.
 
-Exit codes: `0` completed (candidates may exist); `1` candidates with
-`--fail-on-candidate`, or a marker that is not authenticated and verified;
+All scan results have `severity: "info"` and `severity_source: "unassessed"`.
+Critical/high impact cannot be determined from a CNAME or error page. The
+`verify` command optionally accepts your own impact assessment with `--severity`;
+it is applied only after authenticated HTTPS marker checks pass and is recorded
+as `severity_source: "operator"`. This does not change `claimability` or assert
+a previously unauthorized takeover.
+
+| Severity label | Terminal color |
+| --- | --- |
+| `CRITICAL` | Red |
+| `HIGH` | Yellow |
+| `MEDIUM` | Magenta |
+| `LOW` | Cyan |
+| `INFO` | Plain text |
+
+```bash
+# Only supply a severity after independently assessing the impact.
+danglinglens verify --challenge challenge.json --verify-tls --severity high
+```
+
+Example plain result:
+
+```text
+[INFO] [provider_error] docs.example.test provider=github_pages severity_source=unassessed claimability=not_verified
+```
+
+Version 0.2.0 uses result schema 2. The old `candidate` status is replaced by
+the factual `dangling_dns` and `provider_error` statuses. Integrations consuming
+JSON should update those status filters. Challenge-file schema remains version 1.
+
+Exit codes: `0` completed (observations may exist); `1` repeated DNS/provider
+observations or wildcard review with `--fail-on-observation` (legacy alias:
+`--fail-on-candidate`), or a marker that is not authenticated and verified;
 `2` input/output/internal error; `3` one or more inconclusive checks; `130`
 interrupted. Code 3 takes precedence over code 1. Interrupted or failed runs
 can leave partial output; never treat those files as complete scans.
@@ -135,7 +198,7 @@ The default JSONL excludes bodies; full evidence includes base64 and decoded tex
 Rules were reviewed on **2026-10-05**. Run `danglinglens providers` for sources
 and provider-specific caveats.
 
-| Provider | Candidate signals |
+| Provider | Observed signals |
 | --- | --- |
 | Amazon S3 | Recognized S3 CNAME, HTTP 404, AmazonS3 server identity, parsed `NoSuchBucket` XML with the original hostname as `BucketName`. |
 | GitHub Pages | `github.io` CNAME, HTTP 404, GitHub server identity and the missing-Pages response. Domain verification still needs manual review. |
@@ -148,7 +211,14 @@ and provider-specific caveats.
 CloudFront, Fastly and Google Cloud Storage are recognized to suppress common
 misleading historical signatures. Their reachable names are not tested using
 those signatures. Other services with verification protections can appear as
-generic dangling candidates: they still require provider review.
+generic dangling DNS observations: they still require provider review.
+
+A matching error page does not override an incomplete check of the other
+protocol. Timeouts, blocked/rate-limited responses, server failures, successful
+pages and unchecked redirect destinations produce `inconclusive`. A redirect
+is allowed as supporting evidence only when it points to the original hostname's
+root on a protocol that was actually checked and matched the provider rule.
+Provider server headers must match exactly where a rule requires them.
 
 This deliberately narrow release misses some genuine issues. It does not cover
 NS/MX delegation takeover, expired-domain registration checks, flattened

@@ -81,7 +81,7 @@ def test_evidence_retains_raw_bytes_and_jsonl_omits_body(tmp_path):
     from danglinglens.models import HTTPView
 
     raw = b"proof\xff\n"
-    result = Result("docs.example.test", status="candidate")
+    result = Result("docs.example.test", status="provider_error")
     result.http = [
         HTTPView("http://docs.example.test/", body_base64=base64.b64encode(raw).decode())
     ]

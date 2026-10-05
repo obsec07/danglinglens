@@ -1,12 +1,47 @@
 import asyncio
 import secrets
 from dataclasses import asdict
+from urllib.parse import urljoin, urlsplit
 
 from .dnscheck import DNSClient, consensus
 from .httpcheck import HTTPClient
 from .inputs import in_scope
 from .models import DNSView, Result
 from .providers import CATALOG, identify
+
+
+def complete_http_round(responses, host: str, matching_schemes: set[str]) -> bool:
+    """A matching error cannot override an incomplete or conflicting protocol check."""
+    for response in responses:
+        if (
+            response.error
+            or response.truncated
+            or response.status is None
+            or response.status in {401, 403, 408, 429}
+            or response.status >= 500
+            or 200 <= response.status < 300
+        ):
+            return False
+        if 300 <= response.status < 400:
+            location = response.headers.get("location")
+            if not location:
+                return False
+            try:
+                target = urlsplit(urljoin(response.url, location))
+                if (
+                    target.hostname != host
+                    or target.scheme not in matching_schemes
+                    or target.path not in {"", "/"}
+                    or target.query
+                    or target.fragment
+                    or target.username
+                    or target.password
+                    or target.port not in {None, 443 if target.scheme == "https" else 80}
+                ):
+                    return False
+            except ValueError:
+                return False
+    return True
 
 
 class Scanner:
@@ -69,9 +104,10 @@ class Scanner:
         if provider:
             result.provider = provider.key
             result.references = list(dict.fromkeys([provider.source, CATALOG]))
+            result.limitations.append(provider.caveat)
         if provider and provider.suppress:
             result.status = "provider_review" if baseline.state == "NXDOMAIN" else "no_signal"
-            result.reasons.append(provider.caveat)
+            result.reasons.append(f"CNAME target lookup returned {baseline.state}")
             return result
         dangling = baseline.state == "NXDOMAIN"
         if baseline.state == "NODATA":
@@ -98,10 +134,11 @@ class Scanner:
                 else:
                     result.reasons.append("No supported provider fingerprint on the original host")
                 return result
-            if any(r.status is not None and 200 <= r.status < 300 for r in result.http):
+            if not complete_http_round(result.http, host, matches):
                 result.status = "inconclusive"
                 result.reasons.append(
-                    "A live HTTP(S) response conflicts with the missing-site signature"
+                    "Another HTTP(S) check was incomplete, access-limited, live, or redirected "
+                    "to an unchecked destination"
                 )
                 return result
         else:
@@ -123,36 +160,31 @@ class Scanner:
             repeated = await self.roots(host, second)
             result.http.extend(repeated)
             again = {r.url.split(":", 1)[0] for r in repeated if provider.matches_response(r, host)}
-            if not matches.intersection(again) or any(
-                r.status is not None and 200 <= r.status < 300 for r in repeated
-            ):
+            if not matches.intersection(again) or not complete_http_round(repeated, host, again):
                 result.status = "inconclusive"
                 result.reasons.append("Missing-site signature did not reproduce consistently")
                 return result
         result.reasons.append(
-            "CNAME target is NXDOMAIN on both resolvers in both rounds"
+            f"CNAME target {baseline.terminal} returned NXDOMAIN from "
+            f"{len(self.resolvers)} resolvers in two rounds"
             if dangling
             else "Provider DNS and HTTP signature reproduced on the same protocol"
         )
-        if provider:
-            result.reasons.append(provider.caveat)
         if any(record["values"] for record in result.ownership):
             result.status = "ownership_signal"
-            result.reasons.append("asuid TXT exists; domain ownership protection may block claims")
+            result.reasons.append("asuid TXT records were returned")
         elif any(record["state"] not in {"NOERROR", "NXDOMAIN"} for record in result.ownership):
             result.status = "inconclusive"
             result.reasons.append("Could not check Azure domain verification TXT records")
         elif result.wildcard["state"] == "similar":
             result.status = "wildcard_review"
-            result.reasons.append(
-                "Random DNS controls match; review possible wildcard configuration"
-            )
+            result.reasons.append("Random DNS control names returned the same CNAME routing")
         elif result.wildcard["state"] == "unknown":
             result.status = "inconclusive"
             result.reasons.append("Wildcard controls could not be resolved consistently")
         else:
-            result.status = "candidate"
-        result.reasons.append(
+            result.status = "dangling_dns" if dangling else "provider_error"
+        result.limitations.append(
             "Exact-name claimability remains unverified; manual provider review required"
         )
         return result

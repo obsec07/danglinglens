@@ -14,9 +14,17 @@ from .dnscheck import DNSClient, RateLimiter
 from .httpcheck import HTTPClient
 from .inputs import normalize_host, read_lines, targets
 from .models import Result
+from .output import SEVERITIES, assign_severity, severity_label
 from .providers import PROVIDERS, REVIEWED
 from .scanner import Scanner
 from .verify import create_challenge, load_challenge, verify_marker
+
+
+class PlainArgumentParser(argparse.ArgumentParser):
+    def __init__(self, *args, **kwargs):
+        if sys.version_info >= (3, 14):
+            kwargs["color"] = False
+        super().__init__(*args, **kwargs)
 
 
 def positive_float(value: str) -> float:
@@ -41,6 +49,14 @@ def resolver_ip(value: str) -> str:
 
 
 def network_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--color",
+        choices=("auto", "always", "never"),
+        default="auto",
+        help="severity label colors; help and JSON always stay plain (auto)",
+    )
+    parser.add_argument("--raw", action="store_true", help="plain result lines without progress")
+    parser.add_argument("-v", "--verbose", action="store_true", help="show reasons and limitations")
     parser.add_argument(
         "--resolver",
         action="append",
@@ -81,7 +97,7 @@ def network_options(parser: argparse.ArgumentParser) -> None:
 
 
 def parser() -> argparse.ArgumentParser:
-    root = argparse.ArgumentParser(
+    root = PlainArgumentParser(
         prog="danglinglens",
         description="Conservative subdomain takeover triage for authorized targets.",
     )
@@ -118,7 +134,11 @@ def parser() -> argparse.ArgumentParser:
     )
     scan.add_argument("--show-all", action="store_true", help="also print no_signal results")
     scan.add_argument(
-        "--fail-on-candidate", action="store_true", help="exit 1 for review candidates"
+        "--fail-on-observation",
+        "--fail-on-candidate",
+        dest="fail_on_observation",
+        action="store_true",
+        help="exit 1 for repeated DNS/provider observations or wildcard review",
     )
     network_options(scan)
     challenge = commands.add_parser(
@@ -131,6 +151,11 @@ def parser() -> argparse.ArgumentParser:
     )
     verify.add_argument("--challenge", type=Path, required=True)
     verify.add_argument("--scheme", choices=["https", "http"], default="https")
+    verify.add_argument(
+        "--severity",
+        choices=SEVERITIES,
+        help="your impact assessment; applied only after verified HTTPS marker proof",
+    )
     network_options(verify)
     commands.add_parser("providers", help="list reviewed provider signals and limitations")
     return root
@@ -161,12 +186,22 @@ class Reporter:
                     )
         if result.status != "no_signal" or getattr(self.args, "show_all", False):
             # No response body or server-controlled text is printed to a terminal.
+            mode = (
+                "never" if getattr(self.args, "raw", False) else getattr(self.args, "color", "auto")
+            )
+            label = severity_label(result.severity, sys.stderr, mode)
+            assessment = f"severity_source={result.severity_source}"
             print(
-                f"[{result.status}] {result.host} ({result.provider or 'unclassified'})",
+                f"{label} [{result.status}] {result.host} "
+                f"provider={result.provider or 'unknown'} {assessment} "
+                f"claimability={result.claimability}",
                 file=sys.stderr,
             )
-            for reason in result.reasons:
-                print(f"  {reason}", file=sys.stderr)
+            if getattr(self.args, "verbose", False):
+                for reason in result.reasons:
+                    print(f"  observed: {reason}", file=sys.stderr)
+                for limitation in result.limitations:
+                    print(f"  limitation: {limitation}", file=sys.stderr)
 
 
 async def scan_many(scanner: Scanner, hosts, concurrency: int, reporter: Reporter) -> None:
@@ -189,12 +224,13 @@ async def scan_many(scanner: Scanner, hosts, concurrency: int, reporter: Reporte
 
     # TaskGroup cancels siblings on errors: a bad late input cannot deadlock a full queue.
     async with asyncio.TaskGroup() as group:
-        progress = group.create_task(heartbeat())
+        progress = None if getattr(reporter.args, "raw", False) else group.create_task(heartbeat())
         producer = group.create_task(produce())
         workers = [group.create_task(worker()) for _ in range(concurrency)]
         await producer
         await asyncio.gather(*workers)
-        progress.cancel()
+        if progress:
+            progress.cancel()
 
 
 def build_scanner(args) -> Scanner:
@@ -214,7 +250,7 @@ def run(args) -> int:
     if args.command == "providers":
         print(f"Rules reviewed {REVIEWED}; all claimability requires manual validation.")
         for p in PROVIDERS:
-            mode = "review-only" if p.suppress else "candidate signals"
+            mode = "review-only" if p.suppress else "observation rules"
             print(f"{p.key}: {mode}\n  {p.caveat}\n  {p.source}")
         return 0
     if args.command == "challenge":
@@ -268,13 +304,16 @@ def run(args) -> int:
                 else stack.enter_context(open(args.jsonl, "x", encoding="utf-8"))
             )
         reporter = Reporter(args, stream)
-        print(
-            f"DanglingLens {__version__} | TLS verification: "
-            f"{'on' if args.verify_tls else 'off'} | no automatic resource claims",
-            file=sys.stderr,
-        )
+        if not args.raw:
+            print(
+                f"DanglingLens {__version__} | TLS verification: "
+                f"{'on' if args.verify_tls else 'off'} | severity is not auto-assigned",
+                file=sys.stderr,
+            )
         if args.command == "verify":
             result = asyncio.run(verify_marker(scanner, challenge, args.scheme))
+            if args.severity is not None:
+                assign_severity(result, args.severity)
             reporter.emit(result)
             return (
                 0
@@ -282,13 +321,16 @@ def run(args) -> int:
                 else (3 if result.status == "inconclusive" else 1)
             )
         asyncio.run(scan_many(scanner, hosts, args.concurrency, reporter))
-        print("Completed: " + json.dumps(dict(sorted(reporter.counts.items()))), file=sys.stderr)
+        if not args.raw:
+            print(
+                "Completed: " + json.dumps(dict(sorted(reporter.counts.items()))), file=sys.stderr
+            )
         if not reporter.counts:
             raise ValueError("no targets found in the input")
         if reporter.counts["inconclusive"]:
             return 3
-        if args.fail_on_candidate and any(
-            reporter.counts[s] for s in ("candidate", "wildcard_review")
+        if args.fail_on_observation and any(
+            reporter.counts[s] for s in ("dangling_dns", "provider_error", "wildcard_review")
         ):
             return 1
     return 0

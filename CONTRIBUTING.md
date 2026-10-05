@@ -12,7 +12,9 @@ wrong provider, wrong hostname, DNS failure and wildcard ambiguity as relevant.
 
 Never introduce a `vulnerable` label solely from a fingerprint. Do not promote
 DNS errors to NXDOMAIN, add generic 404 matches, or bypass domain-verification
-checks. A rule is evidence for a review candidate, not a promise of claimability.
+checks. A rule describes an observed condition, not a promise of claimability.
+All scan results retain unassessed informational severity. Color help must remain
+disabled; ANSI styling belongs only on terminal severity labels, never in JSON.
 
 Update the reviewed date, research notes, coverage table and CLI documentation
 when behavior changes. Describe compatibility and false-negative tradeoffs.

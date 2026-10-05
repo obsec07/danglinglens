@@ -4,10 +4,12 @@ from conftest import HOST
 from danglinglens.models import HTTPView
 
 
-async def test_repeated_provider_fingerprint_is_candidate_only(rig):
+async def test_repeated_provider_fingerprint_is_an_unassessed_observation(rig):
     scanner, dns, http = rig
     result = await scanner.scan(HOST)
-    assert result.status == "candidate"
+    assert result.status == "provider_error"
+    assert result.severity == "info"
+    assert result.severity_source == "unassessed"
     assert result.claimability == "not_verified"
     assert len(result.dns) == 4
     assert len(result.http) == 4
@@ -43,10 +45,13 @@ async def test_nxdomain_input_without_alias_is_not_takeover(rig):
     assert not http.calls
 
 
-async def test_real_alias_to_missing_name_is_candidate(rig):
+async def test_alias_to_missing_name_reports_dns_observation_only(rig):
     scanner, dns, http = rig
     dns.target, dns.state = "old.vendor.test", "NXDOMAIN"
-    assert (await scanner.scan(HOST)).status == "candidate"
+    result = await scanner.scan(HOST)
+    assert result.status == "dangling_dns"
+    assert result.severity == "info"
+    assert result.claimability == "not_verified"
     assert not http.calls
 
 
@@ -123,7 +128,7 @@ async def test_match_must_repeat_on_same_scheme(rig):
     [
         ("NOERROR", ["ownership-id"], "ownership_signal"),
         ("ERROR", [], "inconclusive"),
-        ("NXDOMAIN", [], "candidate"),
+        ("NXDOMAIN", [], "dangling_dns"),
     ],
 )
 async def test_azure_ownership_controls(rig, txt_state, values, expected):
@@ -147,3 +152,38 @@ async def test_historical_protected_providers_never_auto_candidate(rig, target):
     scanner, dns, _ = rig
     dns.target, dns.state = target, "NXDOMAIN"
     assert (await scanner.scan(HOST)).status == "provider_review"
+
+
+@pytest.mark.parametrize(
+    "other",
+    [
+        HTTPView("", error="TLS failed"),
+        HTTPView("", 404, truncated=True),
+        HTTPView("", 403),
+        HTTPView("", 429),
+        HTTPView("", 503),
+        HTTPView("", 301, {"location": "https://active.other.test/"}),
+        HTTPView("", 302, {"location": "https://docs.example.test/login"}),
+        HTTPView("", 301, {"location": "https://docs.example.test:444/"}),
+        HTTPView("", 301),
+    ],
+)
+@pytest.mark.parametrize("round_number", [1, 2])
+async def test_matching_fingerprint_cannot_hide_a_failed_other_protocol(rig, other, round_number):
+    scanner, _, http = rig
+    good = http.default
+    http.responses = ([good, good] if round_number == 2 else []) + [good, other]
+    assert (await scanner.scan(HOST)).status == "inconclusive"
+
+
+async def test_redirect_allowed_only_to_the_matching_original_host_root(rig):
+    scanner, _, http = rig
+    redirect = HTTPView("", 301, {"location": f"https://{HOST}/"})
+    http.responses = [http.default, redirect, http.default, redirect]
+    assert (await scanner.scan(HOST)).status == "provider_error"
+
+
+async def test_provider_word_inside_unrelated_server_name_is_not_a_match(rig):
+    scanner, _, http = rig
+    http.default.headers = {"server": "not-github.com"}
+    assert (await scanner.scan(HOST)).status == "no_signal"
