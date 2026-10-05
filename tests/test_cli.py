@@ -71,7 +71,8 @@ def test_jsonl_stdout_is_parseable(monkeypatch, capsys):
     assert main(["scan", "-d", "docs.example.test", "--jsonl", "-"]) == 3
     captured = capsys.readouterr()
     assert json.loads(captured.out)["status"] == "inconclusive"
-    assert "Completed" in captured.err
+    assert "Done:" in captured.err
+    assert "1 incomplete" in captured.err
 
 
 def test_evidence_retains_raw_bytes_and_jsonl_omits_body(tmp_path):

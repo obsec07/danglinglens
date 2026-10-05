@@ -94,7 +94,12 @@ def test_raw_overrides_always_color_and_omits_banner_and_summary(monkeypatch, ca
     assert main(["scan", "-d", "docs.example.test", "--raw", "--color", "always"]) == 0
     captured = capsys.readouterr()
     assert len(captured.err.splitlines()) == 1
-    assert captured.err.startswith("[INFO] [provider_error]")
+    assert captured.err.startswith("[CHECK] docs.example.test - ")
+    assert "takeover? idk twin" in captured.err
+    assert captured.err.isascii()
+    assert not any(
+        field in captured.err for field in ("provider=", "severity_source=", "claimability=")
+    )
     assert "\x1b" not in captured.out + captured.err
 
 
@@ -108,8 +113,69 @@ def test_info_does_not_hide_diagnostic_failures(monkeypatch, capsys):
             return Result(host, status="inconclusive", reasons=["DNS disagreement"])
 
     monkeypatch.setattr("danglinglens.cli.build_scanner", lambda args: OfflineScanner())
-    assert main(["scan", "-d", "docs.example.test", "--raw", "-v"]) == 3
+    assert main(["scan", "-d", "docs.example.test", "--raw", "--show-all", "-v"]) == 3
     assert "DNS disagreement" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("raw", [False, True])
+def test_incomplete_hosts_are_hidden_but_saved_and_fail_the_scan(
+    monkeypatch, capsys, tmp_path, raw
+):
+    class OfflineScanner:
+        async def scan(self, host):
+            return Result(host, status="inconclusive", reasons=["DNS disagreement"])
+
+    monkeypatch.setattr("danglinglens.cli.build_scanner", lambda args: OfflineScanner())
+    hosts = [f"host{i}.example.test" for i in range(4)]
+    input_path = tmp_path / "hosts.txt"
+    input_path.write_text("\n".join(hosts))
+    evidence = tmp_path / "evidence"
+    options = ["--raw"] if raw else []
+    assert (
+        main(["scan", str(input_path), "--jsonl", "-", "--evidence-dir", str(evidence), *options])
+        == 3
+    )
+    captured = capsys.readouterr()
+    saved = [json.loads(line) for line in captured.out.splitlines()]
+    assert {row["host"] for row in saved} == set(hosts)
+    assert all(row["status"] == "inconclusive" for row in saved)
+    assert all(host not in captured.err for host in hosts)
+    for host in hosts:
+        assert json.loads((evidence / host / "evidence.json").read_text())["reasons"] == [
+            "DNS disagreement"
+        ]
+    if raw:
+        assert captured.err == ""
+    else:
+        assert "4 incomplete" in captured.err
+        assert "--show-all -v" in captured.err
+
+
+@pytest.mark.parametrize(
+    "status", ["no_signal", "wildcard_review", "ownership_signal", "provider_review"]
+)
+def test_other_non_leads_require_show_all(status, capsys):
+    args = SimpleNamespace(evidence_dir=None, show_all=False)
+    reporter = Reporter(args, None)
+    result = Result("docs.example.test", status=status)
+    reporter.emit(result)
+    assert capsys.readouterr().err == ""
+    assert reporter.counts[status] == 1
+    args.show_all = True
+    reporter.emit(result)
+    assert result.host in capsys.readouterr().err
+
+
+def test_hidden_wildcard_review_keeps_requested_exit_code(monkeypatch, capsys):
+    class OfflineScanner:
+        async def scan(self, host):
+            return Result(host, status="wildcard_review")
+
+    monkeypatch.setattr("danglinglens.cli.build_scanner", lambda args: OfflineScanner())
+    assert main(["scan", "-d", "docs.example.test", "--fail-on-observation"]) == 1
+    output = capsys.readouterr().err
+    assert "docs.example.test" not in output
+    assert "1 need review" in output
 
 
 @pytest.mark.parametrize(
@@ -160,3 +226,5 @@ def test_verify_cli_serializes_assessment_only_after_proof(
     assert value["severity"] == expected_severity
     assert value["claimability"] == "not_verified"
     assert "\x1b" not in captured.out
+    # Explicit verification failures must stay visible despite quiet scan defaults.
+    assert "docs.example.test" in captured.err

@@ -185,6 +185,7 @@ class Scanner:
         else:
             result.status = "dangling_dns" if dangling else "provider_error"
         result.limitations.append(
-            "Exact-name claimability remains unverified; manual provider review required"
+            "This is a lead, not takeover proof. We have not checked whether the provider "
+            "lets another account use this exact name and domain."
         )
         return result

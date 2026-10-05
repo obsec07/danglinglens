@@ -59,8 +59,9 @@ PROVIDERS = (
         "aws_s3",
         (),
         "https://docs.aws.amazon.com/AmazonS3/latest/userguide/VirtualHosting.html",
-        "The original Host selects the bucket. Check exact bucket name, namespace, region, "
-        "reservation and account restrictions; NoSuchBucket does not prove it is claimable.",
+        "The requested hostname chooses the bucket. A missing bucket is only a lead. "
+        "Check whether your account can create that exact name in the required region and "
+        "namespace; reserved names and account rules may block it.",
         header=("server", "amazons3"),
     ),
     Provider(
@@ -68,8 +69,9 @@ PROVIDERS = (
         ("github.io",),
         "https://docs.github.com/en/pages/configuring-a-custom-domain-for-your-github-pages-site/"
         "verifying-your-custom-domain-for-github-pages",
-        "Account-level verification of this domain or its immediate parent may block claims. "
-        "Its username-specific TXT name cannot be exhaustively discovered by this scanner.",
+        "GitHub may already protect this domain or its direct parent for another account. "
+        "A missing Pages site does not mean you can attach the domain to yours. The proof "
+        "record uses the owner's username, so this scanner cannot check every possible record.",
         "There isn't a GitHub Pages site here.",
         header=("server", "github.com"),
     ),
@@ -77,23 +79,24 @@ PROVIDERS = (
         "azure_app_service",
         ("azurewebsites.net",),
         "https://learn.microsoft.com/en-us/azure/security/fundamentals/subdomain-takeover",
-        "asuid TXT ownership records, reserved names, and generated default hostnames can "
-        "prevent a claim; a missing app is not enough.",
+        "Azure may require a DNS ownership record (asuid), reserve the name, or assign a "
+        "hostname you cannot choose. A missing app does not prove another account can use it.",
         "404 Web Site not found",
     ),
     Provider(
         "azure_blob",
         ("blob.core.windows.net",),
         "https://learn.microsoft.com/en-us/azure/security/fundamentals/subdomain-takeover",
-        "Validate storage-account name availability and custom-domain binding in the provider. "
-        "A missing container is not a missing storage account.",
+        "Check whether Azure lets your account create that exact storage-account name and "
+        "attach this domain. A missing container does not mean the storage account is missing.",
     ),
     Provider(
         "heroku",
         ("herokuapp.com", "herokudns.com", "herokuspace.com"),
         "https://devcenter.heroku.com/articles/custom-domains",
-        "Generated DNS targets, existing domain bindings, wildcard ownership and wildcard "
-        "certificates can block another account; check the exact binding.",
+        "Heroku may assign a target you cannot choose or already link the domain to another "
+        "account. Wildcard domains and certificates can also block a claim. Check whether "
+        "your account can attach this exact domain.",
         "No such app",
         (404,),
         ("server", "heroku"),
@@ -102,8 +105,8 @@ PROVIDERS = (
         "netlify",
         ("netlify.app", "netlify.com"),
         "https://docs.netlify.com/manage/domains/manage-domains/assign-a-domain-to-your-site-app/",
-        "A missing deployment does not show whether the exact domain can be reassigned "
-        "to another account. Check current ownership restrictions.",
+        "A missing Netlify site does not mean the domain is free. Check whether Netlify lets "
+        "your account attach this exact domain; another account may still own the link.",
         "Not Found - Request ID:",
         (404,),
         ("server", "netlify"),
@@ -113,23 +116,23 @@ PROVIDERS = (
         "cloudfront",
         ("cloudfront.net",),
         "https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/CNAMEs.html",
-        "CloudFront distribution names are assigned; certificate and alias ownership checks "
-        "require separate validation. No automatic takeover inference.",
+        "AWS assigns CloudFront names; you cannot simply choose the missing one. Certificates "
+        "and domain-ownership checks may also block another account from using the domain.",
         suppress=True,
     ),
     Provider(
         "fastly",
         ("fastly.net", "fastlylb.net"),
         CATALOG,
-        "The historical unknown-domain fingerprint is not claimability evidence.",
+        "Fastly's unknown-domain error alone does not prove another account can use the domain.",
         suppress=True,
     ),
     Provider(
         "google_cloud_storage",
         ("storage.googleapis.com",),
         CATALOG,
-        "NoSuchBucket on Google Cloud Storage is not an S3 finding; domain ownership "
-        "verification requires separate review.",
+        "Google's NoSuchBucket error is not an Amazon S3 result. Google may require proof "
+        "that you own the domain before another account can use it.",
         suppress=True,
     ),
 )

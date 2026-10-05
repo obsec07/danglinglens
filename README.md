@@ -117,19 +117,46 @@ JSON Lines; use `--jsonl -` for machine-readable stdout. Existing output files
 and evidence directories are never overwritten. Use a fresh name per run.
 
 Help is always plain text, including on Python 3.14 and with forced-color
-environment variables. Results are one line each by default. Add `-v` or
-`--verbose` for observed reasons and separately labeled limitations.
+environment variables. The terminal shows one short line per repeated DNS or
+missing-site lead. Incomplete checks, hosts with no supported signal, wildcard
+reviews and provider-ownership reviews are hidden by default. `--show-all`
+reveals them; add `-v` or `--verbose` for evidence and plain-language provider notes.
+There are no emojis, stickers, or per-host metadata fields in terminal output.
 
 ```bash
 danglinglens --help
 danglinglens scan hosts.txt --raw
 danglinglens scan hosts.txt --verbose --jsonl results.jsonl
+danglinglens scan hosts.txt --show-all --verbose
 ```
 
 `--raw` disables result colors, the startup banner, progress and the completion
 summary. `--color auto|always|never` controls severity label colors; `auto`
 colors only a terminal. `NO_COLOR` and `--raw` override forced result colors.
 JSONL and saved evidence never contain color escape sequences from the renderer.
+Hidden results still go into JSONL and saved evidence. The summary counts leads,
+incomplete checks and reviews; incomplete checks still make the command exit
+with code 3. With `--raw`, a scan without visible leads prints no terminal lines.
+
+Example terminal output:
+
+```text
+[CHECK] docs.example.test - missing-site error from GitHub Pages; takeover? idk twin
+[CHECK] cdn.example.test - DNS points to a missing name; takeover? idk twin
+Done: 100 checked, 2 leads, 4 incomplete. Details: --show-all -v.
+```
+
+`idk twin` means **there is a lead, but the tool has not proved that another
+account can claim it**. A provider can report a missing site while still
+requiring proof that you own the domain. For example, GitHub may reserve the
+domain for an account that already verified it. The missing-site error and the
+ownership restriction can both be true; neither establishes a takeover.
+
+Older releases called these leads `candidate`. That meant "needs a closer
+look", not "confirmed vulnerability". Upgrade and check `danglinglens --version`
+if you still see the old label. Version 0.2.1 uses `[CHECK]` for console leads.
+
+The statuses below are the stable values in JSONL and evidence files:
 
 | Status | Meaning |
 | --- | --- |
@@ -144,10 +171,9 @@ JSONL and saved evidence never contain color escape sequences from the renderer.
 | `control_verified` | Exact marker and negative controls passed over verified HTTPS. This proves marker delivery, not a previously unauthorized takeover. |
 | `marker_not_verified` | The marker or missing-path check did not match. |
 
-`no_signal` rows are hidden in the terminal unless `--show-all` is used; they
-remain in JSONL and summary counts. Scan results never contain a `vulnerable`
-classification. All results retain `claimability: "not_verified"` because the
-tool cannot establish provider-account ownership or prior claimability.
+Scan results never contain a `vulnerable` classification. JSON and evidence
+retain `claimability: "not_verified"`: the tool has not proved that another
+account can claim the resource. This field is no longer printed in the terminal.
 
 All scan results have `severity: "info"` and `severity_source: "unassessed"`.
 Critical/high impact cannot be determined from a CNAME or error page. The
@@ -162,20 +188,19 @@ a previously unauthorized takeover.
 | `HIGH` | Yellow |
 | `MEDIUM` | Magenta |
 | `LOW` | Cyan |
-| `INFO` | Plain text |
+| Unassessed leads and other status labels | Plain text |
 
 ```bash
 # Only supply a severity after independently assessing the impact.
 danglinglens verify --challenge challenge.json --verify-tls --severity high
 ```
 
-Example plain result:
+Severity colors apply to your explicit assessment after a successful HTTPS
+marker check. A verified marker proves your content was served; it does not
+automatically establish a takeover or its impact. Verification results, including
+failures, are always shown. JSON keeps the severity and assessment source.
 
-```text
-[INFO] [provider_error] docs.example.test provider=github_pages severity_source=unassessed claimability=not_verified
-```
-
-Version 0.2.0 uses result schema 2. The old `candidate` status is replaced by
+Versions 0.2.0 and 0.2.1 use result schema 2. The old `candidate` status is replaced by
 the factual `dangling_dns` and `provider_error` statuses. Integrations consuming
 JSON should update those status filters. Challenge-file schema remains version 1.
 

@@ -14,7 +14,7 @@ from .dnscheck import DNSClient, RateLimiter
 from .httpcheck import HTTPClient
 from .inputs import normalize_host, read_lines, targets
 from .models import Result
-from .output import SEVERITIES, assign_severity, severity_label
+from .output import SCAN_LEADS, SEVERITIES, assign_severity, result_line, scan_summary
 from .providers import PROVIDERS, REVIEWED
 from .scanner import Scanner
 from .verify import create_challenge, load_challenge, verify_marker
@@ -56,7 +56,9 @@ def network_options(parser: argparse.ArgumentParser) -> None:
         help="severity label colors; help and JSON always stay plain (auto)",
     )
     parser.add_argument("--raw", action="store_true", help="plain result lines without progress")
-    parser.add_argument("-v", "--verbose", action="store_true", help="show reasons and limitations")
+    parser.add_argument(
+        "-v", "--verbose", action="store_true", help="show evidence and what it means"
+    )
     parser.add_argument(
         "--resolver",
         action="append",
@@ -132,7 +134,11 @@ def parser() -> argparse.ArgumentParser:
         default=100_000,
         help="maximum unique hosts per scan (100000)",
     )
-    scan.add_argument("--show-all", action="store_true", help="also print no_signal results")
+    scan.add_argument(
+        "--show-all",
+        action="store_true",
+        help="also show incomplete checks, skipped hosts and provider reviews",
+    )
     scan.add_argument(
         "--fail-on-observation",
         "--fail-on-candidate",
@@ -184,24 +190,22 @@ class Reporter:
                     (folder / f"response-{i}.body").write_bytes(
                         base64.b64decode(response.body_base64)
                     )
-        if result.status != "no_signal" or getattr(self.args, "show_all", False):
+        if (
+            result.status in SCAN_LEADS
+            or result.status in {"control_verified", "marker_observed", "marker_not_verified"}
+            or getattr(self.args, "command", None) == "verify"
+            or getattr(self.args, "show_all", False)
+        ):
             # No response body or server-controlled text is printed to a terminal.
             mode = (
                 "never" if getattr(self.args, "raw", False) else getattr(self.args, "color", "auto")
             )
-            label = severity_label(result.severity, sys.stderr, mode)
-            assessment = f"severity_source={result.severity_source}"
-            print(
-                f"{label} [{result.status}] {result.host} "
-                f"provider={result.provider or 'unknown'} {assessment} "
-                f"claimability={result.claimability}",
-                file=sys.stderr,
-            )
+            print(result_line(result, sys.stderr, mode), file=sys.stderr)
             if getattr(self.args, "verbose", False):
                 for reason in result.reasons:
-                    print(f"  observed: {reason}", file=sys.stderr)
+                    print(f"  saw: {reason}", file=sys.stderr)
                 for limitation in result.limitations:
-                    print(f"  limitation: {limitation}", file=sys.stderr)
+                    print(f"  heads up: {limitation}", file=sys.stderr)
 
 
 async def scan_many(scanner: Scanner, hosts, concurrency: int, reporter: Reporter) -> None:
@@ -220,7 +224,7 @@ async def scan_many(scanner: Scanner, hosts, concurrency: int, reporter: Reporte
     async def heartbeat():
         while True:
             await asyncio.sleep(5)
-            print(f"Progress: {sum(reporter.counts.values())} hosts completed", file=sys.stderr)
+            print(f"Checked {sum(reporter.counts.values())} hosts...", file=sys.stderr)
 
     # TaskGroup cancels siblings on errors: a bad late input cannot deadlock a full queue.
     async with asyncio.TaskGroup() as group:
@@ -248,9 +252,9 @@ def build_scanner(args) -> Scanner:
 
 def run(args) -> int:
     if args.command == "providers":
-        print(f"Rules reviewed {REVIEWED}; all claimability requires manual validation.")
+        print(f"Rules reviewed {REVIEWED}. Missing-site errors are leads, not takeover proof.")
         for p in PROVIDERS:
-            mode = "review-only" if p.suppress else "observation rules"
+            mode = "manual review only" if p.suppress else "DNS and missing-site checks"
             print(f"{p.key}: {mode}\n  {p.caveat}\n  {p.source}")
         return 0
     if args.command == "challenge":
@@ -306,8 +310,7 @@ def run(args) -> int:
         reporter = Reporter(args, stream)
         if not args.raw:
             print(
-                f"DanglingLens {__version__} | TLS verification: "
-                f"{'on' if args.verify_tls else 'off'} | severity is not auto-assigned",
+                f"DanglingLens {__version__} | TLS checks: {'on' if args.verify_tls else 'off'}",
                 file=sys.stderr,
             )
         if args.command == "verify":
@@ -322,9 +325,7 @@ def run(args) -> int:
             )
         asyncio.run(scan_many(scanner, hosts, args.concurrency, reporter))
         if not args.raw:
-            print(
-                "Completed: " + json.dumps(dict(sorted(reporter.counts.items()))), file=sys.stderr
-            )
+            print(scan_summary(reporter.counts), file=sys.stderr)
         if not reporter.counts:
             raise ValueError("no targets found in the input")
         if reporter.counts["inconclusive"]:
