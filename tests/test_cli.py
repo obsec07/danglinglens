@@ -93,3 +93,39 @@ def test_evidence_retains_raw_bytes_and_jsonl_omits_body(tmp_path):
     assert "body_base64" not in json.loads(stream.getvalue())["http"][0]
     evidence = json.loads((tmp_path / result.host / "evidence.json").read_text())
     assert base64.b64decode(evidence["http"][0]["body_base64"]) == raw
+
+
+def offline(monkeypatch, seen):
+    class OfflineScanner:
+        async def scan(self, host):
+            seen.append(host)
+            return Result(host)
+
+    monkeypatch.setattr("danglinglens.cli.build_scanner", lambda args: OfflineScanner())
+
+
+def test_scan_is_the_default_command_for_hostnames_and_files(monkeypatch, tmp_path, capsys):
+    seen = []
+    offline(monkeypatch, seen)
+    hosts = tmp_path / "subs.txt"
+    hosts.write_text("a.example.test\nb.example.test\n")
+    assert main(["c.example.test", str(hosts)]) == 0
+    assert sorted(seen) == ["a.example.test", "b.example.test", "c.example.test"]
+    assert "no takeovers found" in capsys.readouterr().err
+
+
+def test_piped_stdin_needs_no_arguments(monkeypatch):
+    import io
+
+    seen = []
+    offline(monkeypatch, seen)
+    monkeypatch.setattr("sys.stdin", io.StringIO("a.example.test\nhttps://b.example.test/x\n"))
+    assert main([]) == 0
+    assert sorted(seen) == ["a.example.test", "b.example.test"]
+
+
+def test_short_output_flag(tmp_path, monkeypatch):
+    offline(monkeypatch, [])
+    out = tmp_path / "out.jsonl"
+    assert main(["a.example.test", "-o", str(out), "--raw"]) == 0
+    assert json.loads(out.read_text())["host"] == "a.example.test"

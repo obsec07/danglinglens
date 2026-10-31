@@ -187,3 +187,19 @@ async def test_provider_word_inside_unrelated_server_name_is_not_a_match(rig):
     scanner, _, http = rig
     http.default.headers = {"server": "not-github.com"}
     assert (await scanner.scan(HOST)).status == "no_signal"
+
+
+async def test_names_without_alias_cost_one_query(rig):
+    scanner, dns, http = rig
+    dns.target, dns.state = None, "RESOLVED"
+    result = await scanner.scan(HOST)
+    assert result.status == "no_signal"
+    assert len(dns.alias_calls) == 1
+    assert dns.calls == [] and http.calls == []
+
+
+async def test_unknown_quick_answer_falls_back_to_full_checks(rig):
+    scanner, dns, _ = rig
+    dns.state = "SERVFAIL"
+    assert (await scanner.scan(HOST)).status == "inconclusive"
+    assert dns.calls

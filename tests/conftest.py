@@ -19,6 +19,7 @@ class FakeDNS:
         self.txt_values = []
         self.txt_state = "NOERROR"
         self.calls = []
+        self.alias_calls = []
 
     async def trace(self, host, resolver):
         self.calls.append((host, resolver))
@@ -39,6 +40,12 @@ class FakeDNS:
             state,
             ["93.184.216.34"] if state == "RESOLVED" else [],
         )
+
+    async def aliased(self, host, resolver):
+        self.alias_calls.append((host, resolver))
+        if self.state in {"ERROR", "SERVFAIL", "REFUSED"}:
+            return None
+        return bool(self.target)
 
     async def txt(self, name, resolver):
         return {

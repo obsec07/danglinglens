@@ -90,6 +90,12 @@ class Scanner:
 
     async def scan(self, host: str) -> Result:
         result = Result(host)
+        # Most names have no CNAME: one query decides that, so they skip the full two-resolver,
+        # two-round checks. Any doubt (an error, or an alias) goes through the full checks.
+        resolver = self.resolvers[sum(host.encode()) % len(self.resolvers)]
+        if await self.dns.aliased(host, resolver) is False:
+            result.reasons.append("No CNAME chain; this release does not infer takeover from IPs")
+            return result
         first = await self.views(host)
         result.dns.extend(first)
         if not consensus(first):

@@ -62,6 +62,16 @@ class DNSClient:
         except (dns.exception.DNSException, OSError, ValueError) as exc:
             return Answer("ERROR", error=f"{type(exc).__name__}: {exc}")
 
+    async def aliased(self, host: str, resolver: str) -> bool | None:
+        """Quick first look with one query: does the name start a CNAME chain? None = unknown.
+
+        An A query returns the whole chain, so this catches aliases even from resolvers that
+        answer a CNAME-type query without one."""
+        answer = await self.query(host, "A", resolver)
+        if answer.state not in {"NOERROR", "NXDOMAIN"}:
+            return None
+        return bool(answer.records(host, "CNAME"))
+
     async def trace(self, host: str, resolver: str) -> DNSView:
         view = DNSView(resolver=resolver, host=host, terminal=host)
         current, visited = host, set()

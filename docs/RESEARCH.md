@@ -60,11 +60,13 @@ fingerprint database is silently downloaded or updated at runtime.
    Require the HTTP signal on the same protocol. Conflicting successful
    responses, changing DNS, failed controls, errors on the other protocol,
    access restrictions and unchecked redirects produce `inconclusive`.
-8. Save observations as `dangling_dns` or `provider_error` with unassessed
-   informational severity. These labels describe responses, not resource
-   availability or impact. Provider caveats are stored as limitations, separate
-   from observations. Only an explicit operator assessment after successful
-   authenticated marker verification can add a higher severity label.
+8. Save observations as `dangling_dns` or `provider_error` and rate them with
+   fixed rules (README, "Severity"): `critical` only where the evidence shows the
+   exact claimable name is free (S3 `NoSuchBucket` for the host) or a marker was
+   verified; `high` for free global Azure names without an ownership record;
+   `medium` for missing-site errors and other dangling CNAMEs. Provider caveats
+   are stored as limitations, separate from observations. An operator assessment
+   after authenticated marker verification overrides the rule.
 
 This sequence is an engineering choice derived from the sources, not a claim
 that they prescribe this exact algorithm. Two rounds may hit the same recursive

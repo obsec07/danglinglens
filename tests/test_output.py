@@ -31,7 +31,9 @@ def test_help_stays_plain_even_when_environment_forces_colors(command):
     assert "\x1b" not in result.stdout + result.stderr
 
 
-@pytest.mark.parametrize("severity,code", [("critical", "31"), ("high", "33")])
+@pytest.mark.parametrize(
+    "severity,code", [("critical", "1;97;41"), ("high", "1;31"), ("medium", "1;33")]
+)
 def test_requested_severity_colors(severity, code, monkeypatch):
     monkeypatch.delenv("NO_COLOR", raising=False)
     monkeypatch.setenv("TERM", "xterm")
@@ -80,7 +82,7 @@ def test_only_console_severity_gets_color(monkeypatch):
     assign_severity(result, "high")
     args = SimpleNamespace(evidence_dir=None, color="always", raw=False, verbose=False)
     Reporter(args, stream).emit(result)
-    assert "\x1b[33m[HIGH]\x1b[0m" in terminal.getvalue()
+    assert "\x1b[1;31m[HIGH]\x1b[0m" in terminal.getvalue()
     assert "\x1b" not in stream.getvalue()
     assert json.loads(stream.getvalue())["severity_source"] == "operator"
 
@@ -94,8 +96,8 @@ def test_raw_overrides_always_color_and_omits_banner_and_summary(monkeypatch, ca
     assert main(["scan", "-d", "docs.example.test", "--raw", "--color", "always"]) == 0
     captured = capsys.readouterr()
     assert len(captured.err.splitlines()) == 1
-    assert captured.err.startswith("[CHECK] docs.example.test - ")
-    assert "takeover? idk twin" in captured.err
+    assert captured.err.startswith("[MEDIUM] docs.example.test - ")
+    assert "missing-site error" in captured.err
     assert captured.err.isascii()
     assert not any(
         field in captured.err for field in ("provider=", "severity_source=", "claimability=")
@@ -175,14 +177,14 @@ def test_hidden_wildcard_review_keeps_requested_exit_code(monkeypatch, capsys):
     assert main(["scan", "-d", "docs.example.test", "--fail-on-observation"]) == 1
     output = capsys.readouterr().err
     assert "docs.example.test" not in output
-    assert "1 need review" in output
+    assert "1 to review" in output
 
 
 @pytest.mark.parametrize(
     "proof_status,expected_severity,exit_code",
     [
         ("control_verified", "high", 0),
-        ("marker_observed", "info", 1),
+        ("marker_observed", "high", 1),
         ("inconclusive", "info", 3),
     ],
 )
@@ -228,3 +230,72 @@ def test_verify_cli_serializes_assessment_only_after_proof(
     assert "\x1b" not in captured.out
     # Explicit verification failures must stay visible despite quiet scan defaults.
     assert "docs.example.test" in captured.err
+
+
+def scanned(status, provider=None, target="old.target.test"):
+    from danglinglens.models import DNSView
+
+    result = Result("docs.example.test", status=status, provider=provider)
+    result.dns = [DNSView("1.1.1.1", "docs.example.test", [target], target, "NXDOMAIN")]
+    return result
+
+
+@pytest.mark.parametrize(
+    "status,provider,severity",
+    [
+        ("provider_error", "aws_s3", "critical"),
+        ("control_verified", None, "critical"),
+        ("dangling_dns", "azure_app_service", "high"),
+        ("dangling_dns", "azure_blob", "high"),
+        ("marker_observed", None, "high"),
+        ("provider_error", "github_pages", "medium"),
+        ("provider_error", "heroku", "medium"),
+        ("dangling_dns", None, "medium"),
+        ("wildcard_review", None, "info"),
+        ("ownership_signal", "azure_app_service", "info"),
+        ("provider_review", "cloudfront", "info"),
+        ("inconclusive", None, "info"),
+        ("no_signal", None, "info"),
+    ],
+)
+def test_rule_severity(status, provider, severity):
+    from danglinglens.output import apply_rule
+
+    result = scanned(status, provider)
+    apply_rule(result)
+    assert result.severity == severity
+    assert result.severity_source == ("unassessed" if severity == "info" else "rule")
+
+
+def test_finding_line_shows_severity_target_and_reason():
+    from danglinglens.output import result_line
+
+    line = result_line(scanned("provider_error", "aws_s3", "b.s3.amazonaws.com"), io.StringIO())
+    assert line == (
+        "[CRITICAL] docs.example.test -> b.s3.amazonaws.com - "
+        "Amazon S3: the bucket with this exact name does not exist"
+    )
+
+
+def test_only_findings_are_printed_with_summary_by_severity(monkeypatch, capsys):
+    results = {
+        "a.example.test": ("provider_error", "aws_s3"),
+        "b.example.test": ("dangling_dns", "azure_app_service"),
+        "c.example.test": ("dangling_dns", None),
+        "d.example.test": ("no_signal", None),
+        "e.example.test": ("wildcard_review", None),
+    }
+
+    class OfflineScanner:
+        async def scan(self, host):
+            status, provider = results[host]
+            return Result(host, status=status, provider=provider)
+
+    monkeypatch.setattr("danglinglens.cli.build_scanner", lambda args: OfflineScanner())
+    assert main([*results, "--color", "never"]) == 0
+    err = capsys.readouterr().err
+    assert "[CRITICAL] a.example.test" in err
+    assert "[HIGH] b.example.test" in err
+    assert "[MEDIUM] c.example.test" in err
+    assert "d.example.test" not in err and "e.example.test" not in err
+    assert "5 checked" in err and "1 critical, 1 high, 1 medium" in err and "1 to review" in err

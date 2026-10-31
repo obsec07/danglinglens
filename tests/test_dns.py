@@ -93,3 +93,21 @@ def test_cdn_ip_rotation_does_not_break_dns_agreement():
         ),
     ]
     assert consensus(views)
+
+
+@pytest.mark.parametrize(
+    "reply,expected",
+    [
+        (answer("x.test", "A", records=[("x.test", "CNAME", "y.vendor.test.")]), True),
+        (answer("x.test", "A", "NXDOMAIN", [("x.test", "CNAME", "gone.vendor.test.")]), True),
+        (answer("x.test", "A", records=[("x.test", "A", "93.184.216.34")]), False),
+        (answer("x.test", "A", "NXDOMAIN"), False),
+        (answer("x.test", "A", "SERVFAIL"), None),
+        (Answer("ERROR", error="timeout"), None),
+    ],
+)
+async def test_quick_alias_check(reply, expected):
+    client = DNSClient(1, RateLimiter(100000))
+    client.query = AsyncMock(return_value=reply)
+    assert await client.aliased("x.test", "1.1.1.1") is expected
+    client.query.assert_awaited_once_with("x.test", "A", "1.1.1.1")
