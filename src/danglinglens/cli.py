@@ -5,6 +5,7 @@ import ipaddress
 import json
 import math
 import sys
+import time
 from collections import Counter
 from contextlib import ExitStack
 from pathlib import Path
@@ -14,7 +15,7 @@ from .dnscheck import DNSClient, RateLimiter
 from .httpcheck import HTTPClient
 from .inputs import normalize_host, read_lines, targets
 from .models import Result
-from .output import SCAN_LEADS, SEVERITIES, assign_severity, result_line, scan_summary
+from .output import FINDINGS, SEVERITIES, apply_rule, assign_severity, result_line, scan_summary
 from .providers import PROVIDERS, REVIEWED
 from .scanner import Scanner
 from .verify import create_challenge, load_challenge, verify_marker
@@ -67,7 +68,7 @@ def network_options(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument("--timeout", type=positive_float, default=8, help="seconds per probe (8)")
     parser.add_argument(
-        "--rate", type=positive_float, default=20, help="probe starts per second (20)"
+        "--rate", type=positive_float, default=50, help="probe starts per second (50)"
     )
     parser.add_argument(
         "--repeat-delay",
@@ -92,7 +93,9 @@ def network_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--max-body", type=positive_int, default=65536, help="HTTP body cap in bytes"
     )
-    parser.add_argument("--jsonl", metavar="FILE", help="write all results; '-' means stdout")
+    parser.add_argument(
+        "-o", "--jsonl", metavar="FILE", help="save every result as JSON Lines ('-' = stdout)"
+    )
     parser.add_argument(
         "--evidence-dir", type=Path, help="new directory for full JSON and raw body bytes"
     )
@@ -105,8 +108,16 @@ def parser() -> argparse.ArgumentParser:
     )
     root.add_argument("--version", action="version", version=__version__)
     commands = root.add_subparsers(dest="command", required=True)
-    scan = commands.add_parser("scan", help="check domains or hostname lists")
-    scan.add_argument("files", nargs="*", help="files containing full hostnames, or '-' for stdin")
+    scan = commands.add_parser(
+        "scan", help="check hostnames or lists (the default: 'danglinglens example.com')"
+    )
+    scan.add_argument(
+        "files",
+        nargs="*",
+        metavar="target",
+        help="hostname, or a file with one hostname per line ('-' = stdin; piped input is read "
+        "automatically)",
+    )
     scan.add_argument(
         "-l",
         "--list",
@@ -125,8 +136,8 @@ def parser() -> argparse.ArgumentParser:
         "-c",
         "--concurrency",
         type=positive_int,
-        default=10,
-        help="concurrent host workers (10; maximum 100)",
+        default=25,
+        help="concurrent host workers (25; maximum 100)",
     )
     scan.add_argument(
         "--max-targets",
@@ -137,14 +148,14 @@ def parser() -> argparse.ArgumentParser:
     scan.add_argument(
         "--show-all",
         action="store_true",
-        help="also show incomplete checks, skipped hosts and provider reviews",
+        help="also show hosts that are not findings (incomplete, no signal, reviews)",
     )
     scan.add_argument(
         "--fail-on-observation",
         "--fail-on-candidate",
         dest="fail_on_observation",
         action="store_true",
-        help="exit 1 for repeated DNS/provider observations or wildcard review",
+        help="exit 1 when a critical, high or medium finding (or a wildcard review) is found",
     )
     network_options(scan)
     challenge = commands.add_parser(
@@ -171,9 +182,12 @@ class Reporter:
     def __init__(self, args, stream):
         self.args, self.stream = args, stream
         self.counts: Counter = Counter()
+        self.severities: Counter = Counter()
 
     def emit(self, result: Result) -> None:
+        apply_rule(result)
         self.counts[result.status] += 1
+        self.severities[result.severity] += 1
         if self.stream:
             self.stream.write(json.dumps(result.as_dict(), ensure_ascii=True) + "\n")
             self.stream.flush()
@@ -191,7 +205,7 @@ class Reporter:
                         base64.b64decode(response.body_base64)
                     )
         if (
-            result.status in SCAN_LEADS
+            result.severity in FINDINGS
             or result.status in {"control_verified", "marker_observed", "marker_not_verified"}
             or getattr(self.args, "command", None) == "verify"
             or getattr(self.args, "show_all", False)
@@ -224,7 +238,10 @@ async def scan_many(scanner: Scanner, hosts, concurrency: int, reporter: Reporte
     async def heartbeat():
         while True:
             await asyncio.sleep(5)
-            print(f"Checked {sum(reporter.counts.values())} hosts...", file=sys.stderr)
+            found = sum(reporter.severities[s] for s in FINDINGS)
+            print(
+                f"Checked {sum(reporter.counts.values())} hosts, {found} found...", file=sys.stderr
+            )
 
     # TaskGroup cancels siblings on errors: a bad late input cannot deadlock a full queue.
     async with asyncio.TaskGroup() as group:
@@ -280,13 +297,23 @@ def run(args) -> int:
     if args.command == "scan":
         if args.concurrency > 100:
             raise ValueError("--concurrency cannot exceed 100")
-        paths = args.files + args.lists
+        # a positional target is a list file (or '-') when it exists as one, else a hostname
+        for value in args.files:
+            if value == "-" or Path(value).is_file():
+                args.lists.append(value)
+            else:
+                args.domain.append(value)
+        paths = args.lists
+        if not args.domain and not paths and not args.domains_file and not sys.stdin.isatty():
+            paths = ["-"]  # subfinder -d example.com | danglinglens
         if args.domains_file:
             if args.domains_file == "-" and ("-" in paths or args.wordlist == "-"):
                 raise ValueError("stdin can be used only once")
             args.domain.extend(read_lines(args.domains_file, sys.stdin))
         if not args.domain and not paths:
-            raise ValueError("supply --domain, --domains-file, or a hostname list")
+            raise ValueError(
+                "give a hostname or a file of hostnames, e.g. danglinglens example.com"
+            )
         scopes = [normalize_host(scope) for scope in args.scope]
         scanner.scopes = scopes
         hosts = targets(args.domain, paths, args.wordlist, scopes, sys.stdin, args.max_targets)
@@ -323,21 +350,32 @@ def run(args) -> int:
                 if result.status == "control_verified"
                 else (3 if result.status == "inconclusive" else 1)
             )
+        started = time.monotonic()
         asyncio.run(scan_many(scanner, hosts, args.concurrency, reporter))
         if not args.raw:
-            print(scan_summary(reporter.counts), file=sys.stderr)
+            summary = scan_summary(reporter.counts, reporter.severities, time.monotonic() - started)
+            print(summary, file=sys.stderr)
         if not reporter.counts:
             raise ValueError("no targets found in the input")
         if reporter.counts["inconclusive"]:
             return 3
-        if args.fail_on_observation and any(
-            reporter.counts[s] for s in ("dangling_dns", "provider_error", "wildcard_review")
+        if args.fail_on_observation and (
+            any(reporter.severities[s] for s in FINDINGS) or reporter.counts["wildcard_review"]
         ):
             return 1
     return 0
 
 
+COMMANDS = {"scan", "challenge", "verify", "providers"}
+
+
 def main(argv=None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    # "scan" is the default: danglinglens example.com / danglinglens subs.txt / ... | danglinglens
+    if not argv and not sys.stdin.isatty():
+        argv = ["scan"]
+    elif argv and argv[0] not in COMMANDS and argv[0] not in {"-h", "--help", "--version"}:
+        argv = ["scan", *argv]
     args = parser().parse_args(argv)
     try:
         return run(args)
