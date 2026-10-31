@@ -225,7 +225,7 @@ and provider-specific caveats.
 
 | Provider | Observed signals |
 | --- | --- |
-| Amazon S3 | Recognized S3 CNAME, HTTP 404, AmazonS3 server identity, parsed `NoSuchBucket` XML with the original hostname as `BucketName`. |
+| Amazon S3 | Recognized S3 CNAME, HTTP 404, AmazonS3 server identity, and a parsed `NoSuchBucket` error (XML, or the website endpoint's HTML page) with the original hostname as `BucketName`. |
 | GitHub Pages | `github.io` CNAME, HTTP 404, GitHub server identity and the missing-Pages response. Domain verification still needs manual review. |
 | Azure App Service | `azurewebsites.net` CNAME and repeated NXDOMAIN or missing-site HTTP 404; `asuid.<host>` TXT check. |
 | Azure Blob Storage | `blob.core.windows.net` CNAME and repeated NXDOMAIN. Missing containers are not account takeover signals. |
@@ -247,8 +247,9 @@ Provider server headers must match exactly where a rule requires them.
 
 This deliberately narrow release misses some genuine issues. It does not cover
 NS/MX delegation takeover, expired-domain registration checks, flattened
-ALIAS/ANAME records, IP reuse, or every provider/error-page variant. S3 HTML
-website error pages without the required XML are not matched. A blocked,
+ALIAS/ANAME records, IP reuse, or every provider/error-page variant. S3 website
+error pages are matched only in their standard form (one `Code` and one
+`BucketName` item under a `404 Not Found` heading). A blocked,
 changed, localized or proxied fingerprint may be missed. DNS agreement is not
 DNSSEC validation, and repeated cached DNS responses are not authoritative
 proof of deletion. See [the research and validation guide](docs/RESEARCH.md).

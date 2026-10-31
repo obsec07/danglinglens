@@ -25,7 +25,8 @@ class Provider:
         if self.key == "aws_s3":
             return bool(
                 re.fullmatch(
-                    r".+\.s3(?:[.-]website)?(?:[.-][a-z0-9-]+)?\.amazonaws\.com(?:\.cn)?",
+                    r".+\.s3(?:[.-]website)?(?:\.dualstack)?(?:[.-][a-z0-9-]+)?"
+                    r"\.amazonaws\.com(?:\.cn)?",
                     host,
                 )
             )
@@ -42,6 +43,8 @@ class Provider:
             # Reject copied strings, wrong bucket names, AccessDenied, and missing objects.
             if "<!DOCTYPE" in response.body.upper() or "<!ENTITY" in response.body.upper():
                 return False
+            if response.body.lstrip().lower().startswith("<html"):
+                return s3_website_missing_bucket(response.body, host)
             try:
                 root = ET.fromstring(response.body)
             except ET.ParseError:
@@ -52,6 +55,21 @@ class Provider:
                 and root.findtext("BucketName") == host
             )
         return self.fingerprint is not None and self.fingerprint in response.body
+
+
+# S3 website endpoints (*.s3-website-*.amazonaws.com) answer a missing bucket with a small HTML
+# page instead of XML: "<h1>404 Not Found</h1><ul><li>Code: NoSuchBucket</li>...". Accept it
+# only with that heading and exactly one Code and one BucketName item naming the original host.
+S3_WEBSITE_ITEM = re.compile(r"<li>\s*([A-Za-z]+):\s*([^<]*?)\s*</li>")
+
+
+def s3_website_missing_bucket(body: str, host: str) -> bool:
+    if not re.search(r"<h1>\s*404 Not Found\s*</h1>", body):
+        return False
+    items = S3_WEBSITE_ITEM.findall(body)
+    codes = [value for key, value in items if key == "Code"]
+    buckets = [value for key, value in items if key == "BucketName"]
+    return codes == ["NoSuchBucket"] and buckets == [host]
 
 
 PROVIDERS = (
